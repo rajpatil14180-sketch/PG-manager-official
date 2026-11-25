@@ -8,6 +8,10 @@ straight to the public internet.
 import json
 import os
 import secrets
+import base64
+import hashlib
+import hmac
+import time
 import sqlite3
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,7 +34,54 @@ from core.announcement_service import (
 from core.pricing import calculate_agreed_price
 from core.analytics import get_owner_dashboard
 
-TOKENS = {}
+def _token_secret():
+    secret = os.environ.get("PG_MANAGER_TOKEN_SECRET")
+    if secret:
+        return secret.encode("utf-8")
+    if os.environ.get("VERCEL") == "1":
+        raise RuntimeError("PG_MANAGER_TOKEN_SECRET is not configured.")
+    return b"local-development-only-secret"
+
+
+def _encode_token(user):
+    payload = {
+        "user": user,
+        "exp": int(time.time()) + 8 * 60 * 60,
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    body = base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+    signature = hmac.new(
+        _token_secret(), body.encode("ascii"), hashlib.sha256
+    ).digest()
+    signed = base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
+    return body + "." + signed
+
+
+def _decode_token(token):
+    try:
+        body, supplied_signature = token.split(".", 1)
+        expected = hmac.new(
+            _token_secret(), body.encode("ascii"), hashlib.sha256
+        ).digest()
+        supplied = base64.urlsafe_b64decode(
+            supplied_signature + "=" * (-len(supplied_signature) % 4)
+        )
+        if not hmac.compare_digest(expected, supplied):
+            return None
+
+        raw = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
+        payload = json.loads(raw.decode("utf-8"))
+        if payload.get("exp", 0) < int(time.time()):
+            return None
+
+        user = payload.get("user")
+        return user if isinstance(user, dict) else None
+    except (ValueError, TypeError, KeyError, UnicodeError):
+        return None
+    except RuntimeError:
+        return None
+
+
 WEB_ORIGIN = os.environ.get("PG_MANAGER_WEB_ORIGIN", os.environ.get("GHARPAR_WEB_ORIGIN", "http://127.0.0.1:5173"))
 
 
@@ -73,7 +124,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _user(self):
         token = self.headers.get("Authorization", "").removeprefix("Bearer ")
-        return TOKENS.get(token)
+        return _decode_token(token)
 
     def _owned_pg(self, user, pg_id):
         return any(item["id"] == pg_id for item in get_pgs_for_owner(user["user_id"]))
@@ -468,15 +519,12 @@ class Handler(BaseHTTPRequestHandler):
                 result = login(str(data.get("username", "")).strip(), str(data.get("password", "")))
                 if not result:
                     return self._send(401, {"error": "Incorrect username or password, or account inactive."})
-                token = secrets.token_urlsafe(32)
-                TOKENS[token] = result
+                token = _encode_token(result)
                 return self._send(200, {"token": token, "user": {"username": result["username"], "role": result["role"], "tenant_id": result.get("tenant_id")}})
             user = self._user()
             if not user:
                 return self._send(401, {"error": "Please sign in to continue."})
             if path == "/api/logout":
-                token = self.headers.get("Authorization", "").removeprefix("Bearer ")
-                TOKENS.pop(token, None)
                 return self._send(200, {"ok": True})
             if user["role"] == "tenant":
                 if path == "/api/tenant/tickets":
