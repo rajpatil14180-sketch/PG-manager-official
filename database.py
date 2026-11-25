@@ -21,7 +21,8 @@ _TABLE_STATEMENTS = [
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         pg_id INTEGER NOT NULL REFERENCES pgs(id),
         room_no INTEGER NOT NULL,
-        has_attached_bath INTEGER NOT NULL CHECK(has_attached_bath IN (0, 1))
+        has_attached_bath INTEGER NOT NULL CHECK(has_attached_bath IN (0, 1)),
+        has_balcony INTEGER CHECK(has_balcony IN (0, 1))
     )""",
     """CREATE TABLE IF NOT EXISTS beds (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,7 +39,8 @@ _TABLE_STATEMENTS = [
         join_date TEXT NOT NULL,
         deposit INTEGER NOT NULL,
         agreed_yearly_price INTEGER NOT NULL,
-        is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1))
+        is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+        vacated_on TEXT
     )""",
     """CREATE TABLE IF NOT EXISTS payments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,6 +80,17 @@ def get_connection(db_name=None):
     return conn
 
 
+def _apply_migrations(cursor):
+    """FEATURE: Database Setup
+    Idempotently add nullable columns for balcony and vacating date."""
+    room_cols = {row[1] for row in cursor.execute("PRAGMA table_info(rooms)").fetchall()}
+    if "has_balcony" not in room_cols:
+        cursor.execute("ALTER TABLE rooms ADD COLUMN has_balcony INTEGER CHECK(has_balcony IN (0, 1))")
+    tenant_cols = {row[1] for row in cursor.execute("PRAGMA table_info(tenants)").fetchall()}
+    if "vacated_on" not in tenant_cols:
+        cursor.execute("ALTER TABLE tenants ADD COLUMN vacated_on TEXT")
+
+
 def create_tables(db_name=None):
     """FEATURE: Database Setup
     Create the eight tables and partial unique index if they do not exist."""
@@ -85,6 +98,7 @@ def create_tables(db_name=None):
     cursor = conn.cursor()
     for statement in _TABLE_STATEMENTS:
         cursor.execute(statement)
+    _apply_migrations(cursor)
     cursor.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS one_active_tenant_per_bed "
         "ON tenants(bed_id) WHERE is_active = 1 AND bed_id IS NOT NULL"

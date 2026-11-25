@@ -12,7 +12,7 @@ class GharParApp(tk.Tk):
         """FEATURE: Application Window
         Build the screen and initialize its controls."""
         super().__init__()
-        self.title("GharPar PG Manager")
+        self.title("PG Manager")
         self.geometry("1000x680")
         self.minsize(800, 550)
         self.current_user = None

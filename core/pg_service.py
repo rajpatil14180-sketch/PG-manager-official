@@ -172,8 +172,8 @@ def get_tenant_home_details(tenant_id):
     Return the tenant's PG, room, and bed details for the tenant dashboard."""
     conn = get_connection()
     row = conn.execute(
-        "SELECT t.id AS tenant_id, t.name, t.phone, t.join_date, "
-        "b.id AS bed_id, b.label, r.room_no, p.id AS pg_id, p.name AS pg_name "
+        "SELECT t.id AS tenant_id, t.name, t.phone, t.join_date, t.deposit, t.agreed_yearly_price, "
+        "b.id AS bed_id, b.label, r.room_no, r.has_attached_bath, p.id AS pg_id, p.name AS pg_name, p.address AS pg_address "
         "FROM tenants t LEFT JOIN beds b ON b.id = t.bed_id "
         "LEFT JOIN rooms r ON r.id = b.room_id "
         "LEFT JOIN pgs p ON p.id = r.pg_id WHERE t.id = ?",

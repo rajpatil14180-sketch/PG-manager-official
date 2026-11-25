@@ -34,6 +34,7 @@
 | Pricing Tests | Discount tier boundaries, month-end clamping, leap-year dates, installment count, and remainder are checked | `tests/test_pricing.py` | `PricingTests` methods |
 | Finance Tests | Overdue totals, fully paid status, next due date, and password verification are checked | `tests/test_finance.py` | `FinanceTests` methods |
 | Service Tests | Tenant, payment, PG layout, ticket status, announcement, and invalid-input behaviour are checked | `tests/test_services.py` | `ServiceTests` methods |
+| Integration Tests | End-to-end owner and tenant workflow verification and security boundary tests | `tests/test_integration.py` | `PGManagerIntegrationTests` methods |
 | Reservations and tenant self-booking | Not included in the MVP | — | — |
 
 ## TODO for specification clarification

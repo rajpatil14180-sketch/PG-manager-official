@@ -1,6 +1,6 @@
-# GharPar PG Manager — Web MVP
+# PG Manager — Web Workspace
 
-This project keeps the original Python/Tkinter desktop application and adds a React/Vite web workspace using the same SQLite database and core business logic.
+This project provides a professional React/Vite web workspace along with the original Python/Tkinter desktop application, using the same SQLite database and core business logic.
 
 ## Requirements
 

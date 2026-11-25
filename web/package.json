@@ -1,5 +1,5 @@
 {
-  "name": "gharpar-pg-manager-web",
+  "name": "pg-manager-web",
   "private": true,
   "version": "1.0.0",
   "type": "module",

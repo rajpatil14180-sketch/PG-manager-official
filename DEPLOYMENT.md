@@ -1,4 +1,4 @@
-# GharPar deployment notes (.in domain)
+# PG Manager Deployment Notes (.in domain)
 
 The current ZIP is a local MVP. Do not point a public domain at the development server without completing the deployment hardening below.
 

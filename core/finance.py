@@ -57,6 +57,21 @@ def _calculate_financials(tenant, payments, total_paid, today):
     expected = _expected_amount(schedule, today)
     next_due = _next_due_date(schedule, total_paid)
     overdue = max(0, expected - total_paid)
+    installments = []
+    cumulative = 0
+    for k, (due_date, amount) in enumerate(schedule):
+        cumulative += amount
+        is_covered = total_paid >= cumulative
+        is_due = due_date <= today
+        installments.append({
+            "installment_no": k + 1,
+            "due_date": due_date.isoformat(),
+            "amount": amount,
+            "cumulative": cumulative,
+            "is_due": is_due,
+            "is_paid": is_covered,
+            "status": "paid" if is_covered else ("overdue" if is_due else "upcoming"),
+        })
     return {
         "tenant_id": tenant["id"], "name": tenant["name"],
         "join_date": tenant["join_date"], "agreed_yearly_price": agreed_price,
@@ -64,6 +79,7 @@ def _calculate_financials(tenant, payments, total_paid, today):
         "expected_till_today": expected, "overdue_amount": overdue,
         "next_due_date": next_due, "status": "overdue" if overdue > 0 else "ok",
         "payments": payments,
+        "installments": installments,
     }
 
 

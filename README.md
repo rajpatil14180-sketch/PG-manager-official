@@ -1,6 +1,6 @@
-# GharPar PG Manager
+# PG Manager
 
-GharPar is a beginner-friendly PG management application built with Python, Tkinter, SQLite, and a React/Vite web workspace. Business rules remain in the existing Python core services; the web interface calls those services through `web_api.py`.
+PG Manager is a professional, beginner-friendly PG management application built with Python, Tkinter, SQLite, and a modern React/Vite web workspace with Cohere-inspired design system. Business rules remain in the existing Python core services; the web interface calls those services through `web_api.py`.
 
 ## Requirements
 

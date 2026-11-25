@@ -64,14 +64,17 @@ def _insert_tenant_user(conn, username, password_hash, salt):
     return cursor.lastrowid
 
 
-def vacate_tenant(tenant_id):
+def vacate_tenant(tenant_id, vacated_on=None):
     """FEATURE: Vacate Tenant
-    Mark the tenant inactive while preserving their account and history."""
+    Mark the tenant inactive and record vacating date while preserving history."""
+    vacate_day = vacated_on if isinstance(vacated_on, date) else (
+        date.fromisoformat(str(vacated_on)) if vacated_on else date.today()
+    )
     conn = get_connection()
     try:
         conn.execute(
-            "UPDATE tenants SET is_active = 0 WHERE id = ? AND is_active = 1",
-            (tenant_id,),
+            "UPDATE tenants SET is_active = 0, vacated_on = ? WHERE id = ? AND is_active = 1",
+            (vacate_day.isoformat(), tenant_id),
         )
         conn.commit()
     finally:
@@ -80,13 +83,15 @@ def vacate_tenant(tenant_id):
 
 def add_payment(tenant_id, amount, paid_on, mode):
     """FEATURE: Record Payment
-    Record a valid payment that does not exceed the remaining yearly price."""
+    Record a valid non-future payment that does not exceed remaining yearly price."""
     if type(amount) is not int or amount <= 0:
         raise ValueError("Payment amount must be a positive whole number.")
     if mode not in config.PAYMENT_MODES:
         raise ValueError("Payment mode must be cash or upi.")
-    paid_text = paid_on.isoformat() if isinstance(paid_on, date) else str(paid_on)
-    date.fromisoformat(paid_text)
+    paid_day = paid_on if isinstance(paid_on, date) else date.fromisoformat(str(paid_on))
+    if paid_day > date.today():
+        raise ValueError("Payment date cannot be in the future.")
+    paid_text = paid_day.isoformat()
     conn = get_connection()
     try:
         due_left = _get_tenant_due_left(conn, tenant_id)

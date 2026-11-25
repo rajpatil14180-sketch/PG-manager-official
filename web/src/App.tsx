@@ -1,117 +1,837 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ArrowDownRight, ArrowUpRight, Bath, BedDouble, Bell, Building2, Check, ChevronDown, CircleHelp, DoorOpen, Home, LogOut, Menu, Plus, Search, Settings, ShieldCheck, Sparkles, Wallet, X, Users, CreditCard, Trash2, UserRound } from 'lucide-react'
+import React, { useState, useEffect, useCallback } from 'react'
+import { api, getAuthToken, getAuthRole, setAuthSession, clearAuthSession } from './api'
+import type {
+  Role,
+  PG,
+  Room,
+  Bed,
+  PGSummary,
+  Ticket,
+  Announcement,
+  TenantRecord,
+  OwnerOverviewData,
+  OwnerDashboardData,
+  OwnerFinanceData,
+  TenantHomeData,
+} from './types'
 
-type PG = { id: number; name: string; address: string; total_beds: number; occupied_beds: number; overdue_tenants: number }
-type Bed = { bed_id: number; label: string; base_yearly_price: number; tenant_id: number | null; tenant_name: string | null; status: 'empty'|'occupied'|'overdue' }
-type Room = { room_id: number; room_no: number; has_attached_bath: number; beds: Bed[] }
-type Summary = { total_beds: number; occupied_beds: number; total_expected: number; total_collected: number; total_overdue: number }
-type Ticket = { id: number; category: string; description: string; urgency: string; status: string; tenant_name: string; room_no: number; bed_label: string; age_in_days: number }
-type Announcement = { id: number; message: string; created_at: string }
-type Tenant = { tenant_id:number; name:string; phone:string; join_date:string; deposit:number; agreed_yearly_price:number; is_active:number; room_no:number; bed_label:string; financials:any }
-type BedDetails = { bed:any; room_no:number; pg_name:string; tenant:any; financials:any }
-const money = (n:number) => new Intl.NumberFormat('en-IN',{style:'currency',currency:'INR',maximumFractionDigits:0}).format(n || 0)
-const api = async (path:string, options:RequestInit = {}) => {
-  const token = localStorage.getItem('gharpar_token')
-  const headers: Record<string,string> = {'Content-Type':'application/json', ...(options.headers as Record<string,string> || {})}
-  if (token) headers.Authorization = `Bearer ${token}`
-  let response: Response
-  try { response = await fetch(`/api${path}`, {...options, headers}) }
-  catch { throw new Error('Cannot reach the GharPar API. Start web_api.py in a separate PowerShell window, then try again.') }
-  const raw = await response.text()
-  let data:any = {}
-  if (raw) { try { data = JSON.parse(raw) } catch { throw new Error(`The API returned an unreadable response (HTTP ${response.status}). Restart web_api.py and try again.`) } }
-  if (!response.ok) throw new Error(data.error || `Request failed (HTTP ${response.status}).`)
-  return data
-}
+// Components
+import { LoginPage } from './components/auth/LoginPage'
+import { OwnerDashboard } from './components/owner/OwnerDashboard'
+import { OwnerProperties } from './components/owner/OwnerProperties'
+import { OwnerTenants } from './components/owner/OwnerTenants'
+import { OwnerFinance } from './components/owner/OwnerFinance'
+import { OwnerMaintenance } from './components/owner/OwnerMaintenance'
+import { OwnerAnnouncements } from './components/owner/OwnerAnnouncements'
+
+import { BedDetailsModal } from './components/owner/BedDetailsModal'
+import { AddTenantModal } from './components/owner/AddTenantModal'
+import { RecordPaymentModal } from './components/owner/RecordPaymentModal'
+import { TenantRecordModal } from './components/owner/TenantRecordModal'
+
+import { TenantDashboard } from './components/tenant/TenantDashboard'
+import { TenantAccommodation } from './components/tenant/TenantAccommodation'
+import { TenantPayments } from './components/tenant/TenantPayments'
+import { TenantMaintenance } from './components/tenant/TenantMaintenance'
+import { TenantAnnouncements } from './components/tenant/TenantAnnouncements'
+import { TenantProfileView } from './components/tenant/TenantProfile'
+
+// Icons
+import {
+  Building2,
+  BedDouble,
+  Users,
+  Wallet,
+  Settings,
+  Bell,
+  LogOut,
+  Menu,
+  X,
+  Home,
+  Check,
+  AlertCircle,
+  CreditCard,
+  DoorOpen,
+  User,
+  ShieldCheck,
+} from 'lucide-react'
 
 export default function App() {
-  const [token, setToken] = useState(localStorage.getItem('gharpar_token') || '')
-  const [role, setRole] = useState(localStorage.getItem('gharpar_role') || 'owner')
-  const [tenantHome, setTenantHome] = useState<any>(null)
-  const [tenantCategory, setTenantCategory] = useState('Plumbing')
-  const [tenantUrgency, setTenantUrgency] = useState('Medium')
-  const [tenantTicketText, setTenantTicketText] = useState('')
-  const [username, setUsername] = useState('owner')
-  const [password, setPassword] = useState('')
-  const [loginBusy, setLoginBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [pgs, setPgs] = useState<PG[]>([])
-  const [activePg, setActivePg] = useState<number|null>(null)
+  // Authentication State
+  const [token, setToken] = useState<string>(getAuthToken())
+  const [role, setRole] = useState<Role>(getAuthRole() as Role)
+  const [username, setUsername] = useState<string>('')
+  const [authBusy, setAuthBusy] = useState<boolean>(false)
+  const [authError, setAuthError] = useState<string>('')
+
+  // Notifications
+  const [notice, setNotice] = useState<string>('')
+  const [errorBanner, setErrorBanner] = useState<string>('')
+
+  // Mobile Navigation
+  const [mobileNavOpen, setMobileNavOpen] = useState<boolean>(false)
+
+  // Owner State & Views
+  type OwnerView = 'overview' | 'properties' | 'tenants' | 'finance' | 'maintenance' | 'announcements'
+  const [ownerView, setOwnerView] = useState<OwnerView>('overview')
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => new Date().toISOString().slice(0, 7))
+  const [dashboardData, setDashboardData] = useState<OwnerDashboardData | null>(null)
+  const [overviewData, setOverviewData] = useState<OwnerOverviewData | null>(null)
+  const [financeData, setFinanceData] = useState<OwnerFinanceData | null>(null)
+  const [properties, setProperties] = useState<PG[]>([])
+  const [activePropertyId, setActivePropertyId] = useState<number | null>(null)
   const [layout, setLayout] = useState<Room[]>([])
-  const [summary, setSummary] = useState<Summary|null>(null)
-  const [tickets, setTickets] = useState<Ticket[]>([])
-  const [announcements, setAnnouncements] = useState<Announcement[]>([])
-  const [view, setView] = useState<'overview'|'blueprint'|'maintenance'|'announcements'|'tenants'>('overview')
-  const [tenants, setTenants] = useState<Tenant[]>([])
-  const [bedDetails, setBedDetails] = useState<BedDetails|null>(null)
-  const [tenantRecord, setTenantRecord] = useState<any|null>(null)
-  const [addTenantOpen, setAddTenantOpen] = useState(false)
-  const [tenantForm, setTenantForm] = useState({bed_id:0,name:'',phone:'',join_date:new Date().toISOString().slice(0,10),deposit:'10000',agreed_yearly_price:'',username:'',password:''})
-  const [suggestedPrice, setSuggestedPrice] = useState<number|null>(null)
-  const [paymentTenant, setPaymentTenant] = useState<number|null>(null)
-  const [paymentForm, setPaymentForm] = useState({amount:'',paid_on:new Date().toISOString().slice(0,10),mode:'upi'})
-  const [busy, setBusy] = useState(false)
-  const [notice, setNotice] = useState('')
-  const [announcementText, setAnnouncementText] = useState('')
-  const [mobileNav, setMobileNav] = useState(false)
+  const [propertySummary, setPropertySummary] = useState<PGSummary | null>(null)
+  const [allTenants, setAllTenants] = useState<(TenantRecord['profile'] & { financials: TenantRecord['financials'] })[]>([])
+  const [allTickets, setAllTickets] = useState<Ticket[]>([])
+  const [ownerAnnouncements, setOwnerAnnouncements] = useState<Announcement[]>([])
+  const [ownerLoading, setOwnerLoading] = useState<boolean>(false)
 
-  const loadProperties = useCallback(async () => {
-    const list = await api('/pgs') as PG[]
-    setPgs(list)
-    setActivePg(current => current && list.some(p=>p.id===current) ? current : (list[0]?.id ?? null))
-  }, [])
-  const loadProperty = useCallback(async (id:number) => {
-    setBusy(true); setError('')
-    try {
-      const [l,s,t,a,people] = await Promise.all([api(`/pgs/${id}/layout`),api(`/pgs/${id}/summary`),api(`/pgs/${id}/tickets`),api(`/pgs/${id}/announcements`),api(`/pgs/${id}/tenants`)])
-      setLayout(l); setSummary(s); setTickets(t); setAnnouncements(a); setTenants(people)
-    } catch(e) { setError(e instanceof Error ? e.message : 'Unable to load this property.') }
-    finally { setBusy(false) }
-  }, [])
-  useEffect(() => { if (!token || role !== 'owner') return; loadProperties().catch(e=>{setError(e.message); if(String(e.message).includes('sign in')) doLogout()}) }, [token,role,loadProperties])
-  useEffect(() => { if (!token || role !== 'tenant') return; api('/tenant/home').then(setTenantHome).catch(e=>setError(e.message)) }, [token,role])
-  useEffect(() => { if(token && activePg!==null) loadProperty(activePg) }, [token,activePg,loadProperty])
-  const activeProperty = pgs.find(p=>p.id===activePg)
-  const occupancy = summary?.total_beds ? Math.round((summary.occupied_beds/summary.total_beds)*100) : 0
-  const openTickets = tickets.filter(t=>t.status!=='Resolved')
-  const doLogin = async (e:React.FormEvent) => {
-    e.preventDefault(); setError(''); setLoginBusy(true)
-    try { const result = await api('/login',{method:'POST',body:JSON.stringify({username:username.trim(),password})}); localStorage.setItem('gharpar_token',result.token); localStorage.setItem('gharpar_role',result.user.role); setRole(result.user.role); setToken(result.token); setPassword('') }
-    catch(e) { setError(e instanceof Error ? e.message : 'Sign in failed.') }
-    finally { setLoginBusy(false) }
+  // Modals State
+  const [selectedBedDetails, setSelectedBedDetails] = useState<any | null>(null)
+  const [addTenantOpen, setAddTenantOpen] = useState<boolean>(false)
+  const [addTenantBedId, setAddTenantBedId] = useState<number>(0)
+  const [addTenantBasePrice, setAddTenantBasePrice] = useState<number>(200000)
+
+  const [paymentModalOpen, setPaymentModalOpen] = useState<boolean>(false)
+  const [paymentTenantId, setPaymentTenantId] = useState<number>(0)
+  const [paymentTenantName, setPaymentTenantName] = useState<string>('')
+  const [paymentDueLeft, setPaymentDueLeft] = useState<number | undefined>(undefined)
+
+  const [tenantRecordModalOpen, setTenantRecordModalOpen] = useState<boolean>(false)
+  const [inspectTenantRecord, setInspectTenantRecord] = useState<TenantRecord | null>(null)
+
+  // Tenant State & Views
+  type TenantView = 'home' | 'accommodation' | 'payments' | 'maintenance' | 'announcements' | 'profile'
+  const [tenantView, setTenantView] = useState<TenantView>('home')
+  const [tenantHomeData, setTenantHomeData] = useState<TenantHomeData | null>(null)
+  const [tenantLoading, setTenantLoading] = useState<boolean>(false)
+
+  const notify = (msg: string) => {
+    setNotice(msg)
+    setTimeout(() => setNotice(''), 4000)
   }
-  const doLogout = () => { const old=localStorage.getItem('gharpar_token'); if(old) fetch('/api/logout',{method:'POST',headers:{Authorization:`Bearer ${old}`,'Content-Type':'application/json'},body:'{}'}).catch(()=>{}); localStorage.removeItem('gharpar_token'); localStorage.removeItem('gharpar_role'); setToken(''); setRole('owner'); setTenantHome(null); setPgs([]); setActivePg(null); setLayout([]); setSummary(null); setTenants([]); setBedDetails(null); setTenantRecord(null) }
-  const changeTicket = async (id:number,status:string) => { try { await api(`/tickets/${id}/status`,{method:'POST',body:JSON.stringify({status})}); if(activePg!==null) await loadProperty(activePg); setNotice('Maintenance ticket updated.'); setTimeout(()=>setNotice(''),2800) } catch(e) {setError(e instanceof Error?e.message:'Could not update ticket.')} }
-  const addAnnouncement = async (e:React.FormEvent) => { e.preventDefault(); if(activePg===null)return; try { await api(`/pgs/${activePg}/announcements`,{method:'POST',body:JSON.stringify({message:announcementText})}); setAnnouncementText(''); await loadProperty(activePg); setNotice('Announcement published.'); setTimeout(()=>setNotice(''),2800) } catch(e) {setError(e instanceof Error?e.message:'Could not publish announcement.')} }
 
-  const openBed = async (bed:Bed) => { try { setBedDetails(await api(`/beds/${bed.bed_id}`)); setTenantRecord(null); setError('') } catch(e) { setError(e instanceof Error?e.message:'Could not load bed details.') } }
-  const openTenantRecord = async (tenantId:number) => { try { setTenantRecord(await api(`/tenants/${tenantId}`)); setBedDetails(null); setError('') } catch(e) { setError(e instanceof Error?e.message:'Could not load tenant record.') } }
-  const startAddTenant = async (bedId:number) => { const bed=layout.flatMap(r=>r.beds).find(b=>b.bed_id===bedId); if(!bed)return; setTenantForm({bed_id:bedId,name:'',phone:'',join_date:new Date().toISOString().slice(0,10),deposit:'10000',agreed_yearly_price:String(bed.base_yearly_price),username:'',password:''}); setSuggestedPrice(null); setAddTenantOpen(true); try { const p=await api(`/pricing/suggestion?bed_id=${bedId}&join_date=${new Date().toISOString().slice(0,10)}`); setSuggestedPrice(p.suggested_price); setTenantForm(f=>({...f,agreed_yearly_price:String(p.suggested_price)})) } catch { /* form remains editable if suggestion cannot be loaded */ } }
-  const updateJoinDate = async (joinDate:string) => { setTenantForm(f=>({...f,join_date:joinDate})); try { const p=await api(`/pricing/suggestion?bed_id=${tenantForm.bed_id}&join_date=${joinDate}`); setSuggestedPrice(p.suggested_price); setTenantForm(f=>({...f,agreed_yearly_price:String(p.suggested_price)})) } catch(e) { setError(e instanceof Error?e.message:'Could not calculate suggested price.') } }
-  const saveTenant = async (e:React.FormEvent) => { e.preventDefault(); if(activePg===null)return; try { await api(`/pgs/${activePg}/tenants`,{method:'POST',body:JSON.stringify({...tenantForm,deposit:Number(tenantForm.deposit),agreed_yearly_price:Number(tenantForm.agreed_yearly_price)})}); setAddTenantOpen(false); setBedDetails(null); await loadProperty(activePg); setNotice('Tenant added successfully.'); setTimeout(()=>setNotice(''),2800) } catch(e) { setError(e instanceof Error?e.message:'Could not add tenant.') } }
-  const savePayment = async (e:React.FormEvent) => { e.preventDefault(); if(paymentTenant===null)return; try { const paidTenantId=paymentTenant; await api(`/tenants/${paidTenantId}/payments`,{method:'POST',body:JSON.stringify({...paymentForm,amount:Number(paymentForm.amount)})}); setPaymentTenant(null); if(activePg!==null)await loadProperty(activePg); if(bedDetails) await openBed({bed_id:bedDetails.bed.bed_id} as Bed); if(tenantRecord) setTenantRecord(await api(`/tenants/${paidTenantId}`)); setNotice('Payment recorded successfully.'); setTimeout(()=>setNotice(''),2800) } catch(e) { setError(e instanceof Error?e.message:'Could not record payment.') } }
-  const vacateTenantAction = async (tenantId:number) => { if(!window.confirm('Vacate this tenant? Their payment history will be preserved.'))return; try { await api(`/tenants/${tenantId}/vacate`,{method:'POST',body:'{}'}); setBedDetails(null); setTenantRecord(null); if(activePg!==null)await loadProperty(activePg); setNotice('Tenant vacated. History has been preserved.'); setTimeout(()=>setNotice(''),2800) } catch(e) { setError(e instanceof Error?e.message:'Could not vacate tenant.') } }
-  const removeAnnouncement = async (id:number) => { if(!window.confirm('Delete this announcement?'))return; try { await fetch(`/api/announcements/${id}`,{method:'DELETE',headers:{Authorization:`Bearer ${localStorage.getItem('gharpar_token')}`}}).then(async r=>{if(!r.ok){const d=await r.json();throw new Error(d.error||'Delete failed')}}); if(activePg!==null)await loadProperty(activePg); setNotice('Announcement deleted.'); setTimeout(()=>setNotice(''),2800) } catch(e) { setError(e instanceof Error?e.message:'Could not delete announcement.') } }
-  const submitTenantTicket = async (e:React.FormEvent) => { e.preventDefault(); try { await api('/tenant/tickets',{method:'POST',body:JSON.stringify({category:tenantCategory,urgency:tenantUrgency,description:tenantTicketText})}); setTenantTicketText(''); setTenantHome(await api('/tenant/home')); setNotice('Maintenance request submitted.'); setTimeout(()=>setNotice(''),2800) } catch(e) {setError(e instanceof Error?e.message:'Could not submit ticket.')} }
+  // Load Owner Data
+  const refreshOwnerData = useCallback(async () => {
+    if (!token || role !== 'owner') return
+    setOwnerLoading(true)
+    setErrorBanner('')
+    try {
+      const [dashboard, overview, finance, pgs, tenantsList, ticketsList] = await Promise.all([
+        api.getOwnerDashboard(selectedMonth),
+        api.getOwnerOverview(),
+        api.getOwnerFinance(),
+        api.getPGs(),
+        api.getOwnerTenants(),
+        api.getOwnerTickets(),
+      ])
 
-  if (!token) return <main className="login-page"><div className="login-art"><div className="brand brand-light"><span className="brand-mark"><Home size={20}/></span><span>gharpar</span></div><div className="art-copy"><span className="eyebrow">YOUR PROPERTY, IN GOOD HANDS</span><h1>A better way to<br/>manage the place<br/>people call home.</h1><p>One calm workspace for your properties, residents and everyday operations.</p><div className="art-stats"><div><strong>01</strong><span>One clear view</span></div><div><strong>24/7</strong><span>Stay in control</span></div></div></div><div className="art-visual"><div className="floating-card card-a"><span className="tiny-dot green"/> Occupancy overview <strong>Looking good</strong></div><div className="building-shape"><div className="building-top"/><div className="building-windows"><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/></div><div className="building-door"/></div><div className="floating-card card-b"><span className="tiny-dot pink"/> Rent collected <strong>On track</strong></div></div><span className="art-foot">A little more clarity. A lot more peace of mind.</span></div><section className="login-panel"><div className="login-top"><div className="brand"><span className="brand-mark"><Home size={19}/></span><span>gharpar</span></div><span className="secure"><ShieldCheck size={15}/> Owner & resident access</span></div><div className="login-content"><span className="eyebrow pink-text">WELCOME BACK</span><h2>Good to have you<br/>home.</h2><p className="muted">Sign in to manage your properties or view your resident account.</p><form onSubmit={doLogin} className="login-form"><label>Username<input autoComplete="username" value={username} onChange={e=>setUsername(e.target.value)} placeholder="Enter your username" required/></label><label>Password<input autoComplete="current-password" type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="Enter your password" required/></label>{error&&<div className="error-box"><CircleHelp size={17}/><span>{error}</span></div>}<button className="primary-btn full-btn" disabled={loginBusy}>{loginBusy?'Signing you in…':'Sign in'} <ArrowUpRight size={17}/></button></form><div className="login-note"><ShieldCheck size={16}/><span>Uses your existing GharPar SQLite accounts. No sample account is created.</span></div></div><div className="login-bottom"><span>GHARPAR PROPERTY MANAGEMENT</span><span>Built for everyday simplicity</span></div></section></main>
+      setDashboardData(dashboard)
+      setOverviewData(overview)
+      setFinanceData(finance)
+      setProperties(pgs)
+      setAllTenants(tenantsList)
+      setAllTickets(ticketsList)
+      setOwnerAnnouncements(overview.recent_announcements || [])
 
+      // Set default active property if not set
+      setActivePropertyId(current => (current !== null ? current : pgs[0]?.id ?? null))
+    } catch (err: any) {
+      if (String(err.message).toLowerCase().includes('sign in') || String(err.message).includes('401')) {
+        handleLogout()
+      } else {
+        setErrorBanner(err.message || 'Unable to sync portfolio data.')
+      }
+    } finally {
+      setOwnerLoading(false)
+    }
+  }, [token, role, selectedMonth])
 
-  if (token && role === 'tenant') return <div className="app-shell tenant-shell"><aside className="sidebar"><div className="sidebar-brand"><div className="brand"><span className="brand-mark"><Home size={19}/></span><span>gharpar</span></div></div><div className="workspace-label">RESIDENT PORTAL</div><div className="help-card"><strong>{tenantHome?.profile?.name||username}</strong><p>{tenantHome?.profile?.pg_name||'Your home'}</p></div><div className="sidebar-bottom"><button className="nav-item" onClick={doLogout}><LogOut size={18}/> Sign out</button></div></aside><main className="main-content"><div className="topbar"><div><span className="eyebrow pink-text">RESIDENT PORTAL</span><h2>Welcome home{tenantHome?.profile?.name?`, ${tenantHome.profile.name.split(' ')[0]}`:''}.</h2></div><button className="outline-btn" onClick={doLogout}><LogOut size={16}/> Sign out</button></div>{error&&<div className="error-box"><CircleHelp size={17}/>{error}</div>}{notice&&<div className="success-notice"><Check size={16}/>{notice}</div>}{tenantHome?<><div className="metric-grid three"><Metric icon={<Home/>} label="Your property" value={tenantHome.profile.pg_name||'PG'} hint={`Room ${tenantHome.profile.room_no} · Bed ${tenantHome.profile.label}`} tone="blue"/><Metric icon={<Wallet/>} label="Paid so far" value={money(tenantHome.financials.total_paid)} hint={`Agreed yearly price ${money(tenantHome.financials.agreed_yearly_price)}`} tone="green"/><Metric icon={<CircleHelp/>} label="Amount overdue" value={money(tenantHome.financials.overdue_amount)} hint={`Balance left ${money(tenantHome.financials.due_left)}`} tone="amber"/></div><div className="tenant-content-grid"><section className="panel table-panel"><div className="panel-head"><div><h3>Payment summary</h3><p>Your installment status and payment history</p></div></div><div className="finance-line"><span>Next due date</span><strong>{tenantHome.financials.next_due_date||'All installments covered'}</strong></div><div className="finance-line"><span>Expected till today</span><strong>{money(tenantHome.financials.expected_till_today)}</strong></div><div className="finance-line"><span>Remaining balance</span><strong>{money(tenantHome.financials.due_left)}</strong></div><div className="ticket-list">{tenantHome.financials.payments.map((p:any,i:number)=><div className="ticket-row" key={`${p.paid_on}-${i}`}><span className="ticket-icon green"><CreditCard size={17}/></span><div className="ticket-main"><strong>{money(p.amount)}</strong><p>{p.mode.toUpperCase()} payment</p></div><small>{p.paid_on}</small></div>)}</div></section><section className="panel compose-panel"><div className="compose-icon"><Settings size={20}/></div><h3>Report a maintenance issue</h3><p>Tell the owner what needs attention.</p><form onSubmit={submitTenantTicket}><label>Category<select className="select-control" value={tenantCategory} onChange={e=>setTenantCategory(e.target.value)}>{['Plumbing','Electrical','Wi-Fi','Cleaning','Furniture','Other'].map(x=><option key={x}>{x}</option>)}</select></label><label>Urgency<select className="select-control" value={tenantUrgency} onChange={e=>setTenantUrgency(e.target.value)}>{['Low','Medium','High'].map(x=><option key={x}>{x}</option>)}</select></label><label>Describe the issue<textarea rows={4} value={tenantTicketText} onChange={e=>setTenantTicketText(e.target.value)} required maxLength={1000} placeholder="What happened? Where is it?"/></label><button className="primary-btn" type="submit"><Plus size={16}/> Submit request</button></form></section></div><section className="panel table-panel tenant-lower"><div className="panel-head"><div><h3>Announcements</h3><p>Updates from your property owner</p></div></div>{tenantHome.announcements.length?tenantHome.announcements.map((a:any)=><article className="announcement-card" key={a.id}><div className="announcement-card-top"><Bell size={15}/><span>{new Date(a.created_at).toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'})}</span></div><p>{a.message}</p></article>):<div className="empty-state">No announcements yet.</div>}<div className="section-heading"><div><h3>Your maintenance requests</h3></div></div>{tenantHome.tickets.map((t:any)=><div className="ticket-row" key={t.id}><div className="ticket-main"><strong>{t.category} · {t.urgency}</strong><p>{t.description}</p></div><span className={`status-chip ${t.status.toLowerCase().replace(' ','-')}`}>{t.status}</span></div>)}</section></>:<div className="panel empty-state">Loading your resident portal…</div>}</main></div>
+  // Load Property Floor Plan Layout
+  const loadPropertyLayout = useCallback(async (pgId: number) => {
+    try {
+      const [rooms, summ] = await Promise.all([
+        api.getPGLayout(pgId),
+        api.getPGSummary(pgId),
+      ])
+      setLayout(rooms)
+      setPropertySummary(summ)
+    } catch (err: any) {
+      setErrorBanner(err.message || 'Could not load floor plan layout.')
+    }
+  }, [])
 
-  return <div className="app-shell"><aside className={`sidebar ${mobileNav?'sidebar-open':''}`}><div className="sidebar-brand"><div className="brand"><span className="brand-mark"><Home size={19}/></span><span>gharpar</span></div><button className="icon-btn mobile-close" onClick={()=>setMobileNav(false)}><X size={18}/></button></div><div className="workspace-label">WORKSPACE</div><button className={`nav-item ${view==='overview'?'selected':''}`} onClick={()=>{setView('overview');setMobileNav(false)}}><Building2 size={18}/> Overview</button><div className="side-section"><div className="side-section-title">YOUR PROPERTIES <span>{pgs.length.toString().padStart(2,'0')}</span></div>{pgs.map(pg=><button key={pg.id} className={`property-nav ${activePg===pg.id?'property-active':''}`} onClick={()=>{setActivePg(pg.id);setView('blueprint');setMobileNav(false)}}><span className="property-avatar">{pg.name.slice(0,1)}</span><span className="property-nav-copy"><strong>{pg.name}</strong><small>{pg.occupied_beds}/{pg.total_beds} beds occupied</small></span><span className="nav-chevron">›</span></button>)}</div><div className="side-section"><div className="side-section-title">OPERATIONS</div><button className={`nav-item ${view==='blueprint'?'selected':''}`} onClick={()=>setView('blueprint')}><BedDouble size={18}/> Bed blueprint</button><button className={`nav-item ${view==='tenants'?'selected':''}`} onClick={()=>setView('tenants')}><Users size={18}/> Tenants <span className="nav-count">{tenants.filter(t=>t.is_active).length}</span></button><button className={`nav-item ${view==='maintenance'?'selected':''}`} onClick={()=>setView('maintenance')}><Settings size={18}/> Maintenance <span className="nav-count">{openTickets.length}</span></button><button className={`nav-item ${view==='announcements'?'selected':''}`} onClick={()=>setView('announcements')}><Bell size={18}/> Announcements</button></div><div className="sidebar-bottom"><div className="help-card"><span className="help-icon"><Sparkles size={17}/></span><strong>Made for smoother days</strong><p>Your properties, organized in one place.</p></div><button className="profile-row" onClick={doLogout}><span className="profile-avatar">O</span><span><strong>{username || 'Owner'}</strong><small>Property owner</small></span><LogOut size={16} className="logout-icon"/></button></div></aside>
-  {mobileNav&&<button className="nav-backdrop" aria-label="Close menu" onClick={()=>setMobileNav(false)}/>}
-  <main className="main-area"><header className="topbar"><div className="topbar-left"><button className="icon-btn menu-btn" onClick={()=>setMobileNav(true)}><Menu size={20}/></button><div className="breadcrumbs"><span>Workspace</span><span className="crumb-sep">/</span><strong>{view==='overview'?'Overview':view==='blueprint'?'Bed blueprint':view==='maintenance'?'Maintenance':'Announcements'}</strong></div></div><div className="topbar-right"><div className="live-pill"><span/> All systems operational</div><button className="icon-btn" title="Help"><CircleHelp size={18}/></button><div className="top-avatar">O</div></div></header>
-  <div className="page-content">{error&&<div className="error-banner"><CircleHelp size={17}/>{error}<button onClick={()=>setError('')}><X size={15}/></button></div>}{notice&&<div className="success-banner"><Check size={16}/>{notice}</div>}
-  {view==='overview'&&<><div className="page-heading"><div><span className="eyebrow pink-text">WEDNESDAY, YOUR WORKSPACE</span><h1>Good afternoon, {username} <span className="wave">✳</span></h1><p>Here’s what’s happening across your properties today.</p></div><button className="outline-btn" onClick={()=>{setView('blueprint');if(activePg===null&&pgs[0])setActivePg(pgs[0].id)}}><BedDouble size={16}/> View blueprint</button></div><div className="overview-hero"><div className="hero-text"><span className="hero-tag"><Sparkles size={14}/> YOUR PORTFOLIO AT A GLANCE</span><h2>Good spaces start<br/>with great care.</h2><p>Keep your properties running smoothly with everything you need, all in one place.</p><button className="hero-btn" onClick={()=>setView('blueprint')}>Explore your properties <ArrowUpRight size={16}/></button></div><div className="hero-illustration"><div className="sun"/><div className="plant plant-one"><i/><i/><i/></div><div className="house-illustration"><div className="roof"/><div className="house-body"><div className="house-window w1"/><div className="house-window w2"/><div className="house-door"/></div></div><div className="plant plant-two"><i/><i/><i/></div><div className="path"/></div></div><div className="section-heading"><div><h2>Your portfolio</h2><p>A clear picture of your properties.</p></div><span className="subtle-count">{pgs.length} PROPERTIES</span></div><div className="metric-grid"><Metric icon={<Building2/>} label="Total properties" value={String(pgs.length).padStart(2,'0')} hint="Across your portfolio" tone="rose"/><Metric icon={<BedDouble/>} label="Beds occupied" value={`${pgs.reduce((a,p)=>a+p.occupied_beds,0)} / ${pgs.reduce((a,p)=>a+p.total_beds,0)}`} hint={`${pgs.reduce((a,p)=>a+p.total_beds,0)-pgs.reduce((a,p)=>a+p.occupied_beds,0)} beds available`} tone="blue"/><Metric icon={<Wallet/>} label="Rent collected" value={money(summary?.total_collected||0)} hint="Recorded payments" tone="green"/><Metric icon={<Bell/>} label="Needs attention" value={String(openTickets.length+pgs.reduce((a,p)=>a+p.overdue_tenants,0))} hint="Open tasks and overdue tenants" tone="amber"/></div><div className="section-heading properties-heading"><div><h2>Your properties</h2><p>Select a property to open its floor plan and workspace.</p></div><span className="text-link">View all <ArrowUpRight size={14}/></span></div><div className="property-grid">{pgs.map((pg,i)=><button className="property-card" key={pg.id} onClick={()=>{setActivePg(pg.id);setView('blueprint')}}><div className={`property-cover cover-${i%2}`}><div className="cover-sun"/><div className="cover-building"><i/><i/><i/><i/><i/><i/><i/><i/></div><span className="cover-chip"><span/> {pg.occupied_beds===pg.total_beds?'Fully occupied':'Active property'}</span><span className="cover-number">0{i+1}</span></div><div className="property-card-body"><div className="property-card-title"><div><h3>{pg.name}</h3><p>{pg.address}</p></div><span className="round-arrow"><ArrowUpRight size={17}/></span></div><div className="occupancy-row"><span>Occupancy</span><strong>{pg.total_beds?Math.round(pg.occupied_beds/pg.total_beds*100):0}%</strong></div><div className="progress-track"><span style={{width:`${pg.total_beds?pg.occupied_beds/pg.total_beds*100:0}%`}}/></div><div className="property-card-foot"><span><BedDouble size={15}/>{pg.occupied_beds} of {pg.total_beds} beds</span><span>{pg.overdue_tenants>0?<em className="attention">{pg.overdue_tenants} overdue</em>:<em className="good">All caught up</em>}</span></div></div></button>)}</div><div className="lower-grid"><div className="panel"><div className="panel-head"><div><h3>Maintenance overview</h3><p>Keep small issues from becoming big ones.</p></div><button className="text-link" onClick={()=>setView('maintenance')}>View tickets <ArrowUpRight size={14}/></button></div>{openTickets.slice(0,3).length?openTickets.slice(0,3).map(t=><div className="ticket-mini" key={t.id}><span className={`ticket-dot ${t.urgency.toLowerCase()}`}/><div><strong>{t.category}</strong><p>{t.description}</p></div><span className="ticket-age">{t.age_in_days}d ago</span></div>):<div className="empty-state"><Check size={20}/><span>No open maintenance tickets.</span></div>}</div><div className="panel collection-panel"><div className="panel-head"><div><h3>Collection snapshot</h3><p>Based on recorded tenant payments.</p></div><span className="chart-icon"><Wallet size={18}/></span></div><div className="collection-total">{money(summary?.total_collected||0)}</div><div className="collection-caption">Collected to date</div><div className="collection-bar"><span style={{width:`${summary?.total_expected?Math.min(100,(summary.total_collected/summary.total_expected)*100):0}%`}}/></div><div className="collection-legend"><span><i className="legend-green"/>Collected</span><span><i className="legend-grey"/>Expected {money(summary?.total_expected||0)}</span></div></div></div></>}
-  {view==='blueprint'&&<><div className="page-heading"><div><span className="eyebrow pink-text">PROPERTY WORKSPACE</span><h1>{activeProperty?.name||'Your property'} <span className="wave">✳</span></h1><p>{activeProperty?.address||'Select a property from the sidebar.'}</p></div><div className="heading-actions"><button className="outline-btn" onClick={()=>setView('maintenance')}><Settings size={16}/> Maintenance</button><button className="primary-btn" onClick={()=>setView('announcements')}><Plus size={16}/> New announcement</button></div></div><div className="property-tabs"><button className="tab-active"><DoorOpen size={16}/> Floor plan</button><button onClick={()=>setView('maintenance')}><Settings size={16}/> Maintenance <span className="tab-count">{openTickets.length}</span></button><button onClick={()=>setView('announcements')}><Bell size={16}/> Announcements</button></div><div className="blueprint-summary"><div><span className="eyebrow">LIVE FLOOR PLAN</span><h2>Room by room, at a glance.</h2><p>Choose any bed to review occupancy and pricing.</p></div><div className="blueprint-legend"><span><i className="legend-empty"/> Available</span><span><i className="legend-occupied"/> Occupied</span><span><i className="legend-overdue"/> Payment overdue</span></div></div><div className="blueprint-stage"><div className="floor-plan"><div className="plan-header"><span><span className="plan-live-dot"/> LIVE LAYOUT</span><span>8 BEDS · 4 ROOMS</span></div><div className="room-grid">{layout.map(room=><div className="room" key={room.room_id}><div className="room-top"><div><span className="room-label">ROOM {String(room.room_no).padStart(2,'0')}</span><strong>{room.has_attached_bath?'Attached bath':'Common washroom'}</strong></div>{room.has_attached_bath?<Bath size={18}/>:<span className="shared-bath">SHARED</span>}</div><div className="beds-row">{room.beds.map(bed=><button key={bed.bed_id} className={`bed-card bed-${bed.status}`} onClick={()=>openBed(bed)}><span className="bed-top"><BedDouble size={21}/><span>{bed.status==='empty'?'AVAILABLE':bed.status==='overdue'?'PAYMENT DUE':'OCCUPIED'}</span></span><strong>Bed {bed.label}</strong><span className="bed-person">{bed.tenant_name||'Ready for a resident'}</span><span className="bed-price">{money(bed.base_yearly_price)}<small> / year</small></span><span className="bed-open"><ArrowUpRight size={14}/></span></button>)}</div></div>)}</div><div className="plan-bottom"><span><Building2 size={15}/> {activeProperty?.name||'Property floor plan'}</span><span>OWNER VIEW · RENT IS OWNER-SET</span></div></div><aside className="blueprint-aside"><div className="panel occupancy-panel"><span className="eyebrow">OCCUPANCY RATE</span><div className="occupancy-big">{occupancy}<small>%</small></div><div className="progress-track large"><span style={{width:`${occupancy}%`}}/></div><div className="occupancy-stats"><div><span className="stat-dot green"/><strong>{summary?.occupied_beds||0}</strong><small>Occupied</small></div><div><span className="stat-dot rose"/><strong>{(summary?.total_beds||0)-(summary?.occupied_beds||0)}</strong><small>Available</small></div></div></div><div className="panel"><div className="panel-head"><div><h3>Property finances</h3><p>Current recorded totals</p></div><Wallet size={18}/></div><div className="finance-line"><span>Collected</span><strong>{money(summary?.total_collected||0)}</strong></div><div className="finance-line"><span>Expected to date</span><strong>{money(summary?.total_expected||0)}</strong></div><div className="finance-line"><span>Overdue</span><strong className="overdue-value">{money(summary?.total_overdue||0)}</strong></div></div><div className="aside-tip"><Sparkles size={17}/><div><strong>A little note</strong><p>Rooms 1 and 2 have attached bathrooms. Rooms 3 and 4 use the common washroom.</p></div></div></aside></div></>}
-  {view==='tenants'&&<><div className="page-heading"><div><span className="eyebrow pink-text">RESIDENT DIRECTORY</span><h1>Tenants <span className="wave">✳</span></h1><p>Manage current residents, balances and tenancy history for {activeProperty?.name||'your property'}.</p></div><div className="heading-actions"><select className="select-control" value={activePg??''} onChange={e=>setActivePg(Number(e.target.value))}>{pgs.map(p=><option value={p.id} key={p.id}>{p.name}</option>)}</select></div></div><div className="panel table-panel"><div className="panel-head"><div><h3>Residents</h3><p>Active and previous tenants assigned to this property</p></div><span className="subtle-count">{tenants.length} RECORDS</span></div>{tenants.length?<div className="tenant-directory">{tenants.map(t=><div className={`tenant-directory-row ${!t.is_active?'tenant-inactive':''}`} key={t.tenant_id}><span className="tenant-avatar"><UserRound size={19}/></span><div className="tenant-main"><strong>{t.name} {!t.is_active&&<span className="status-chip resolved">Vacated</span>}</strong><small>{t.phone} · Room {t.room_no} · Bed {t.bed_label}</small><small>Joined {t.join_date} · Deposit {money(t.deposit)}</small></div><div className="tenant-balance"><strong>{money(t.financials?.due_left||0)}</strong><small>Balance left</small><span className={`status-chip ${(t.financials?.overdue_amount||0)>0?'open':'resolved'}`}>{(t.financials?.overdue_amount||0)>0?`Overdue ${money(t.financials.overdue_amount)}`:'On track'}</span></div><button className="outline-btn small-action" onClick={()=>openTenantRecord(t.tenant_id)}>View record</button></div>)}</div>:<div className="empty-state big-empty"><Users size={25}/><strong>No tenants yet</strong><span>Choose an available bed in the blueprint to add your first tenant.</span><button className="primary-btn" onClick={()=>setView('blueprint')}>Open blueprint</button></div>}</div></>}
-  {view==='maintenance'&&<><div className="page-heading"><div><span className="eyebrow pink-text">PROPERTY CARE</span><h1>Maintenance <span className="wave">✳</span></h1><p>Track reported issues and keep your residents comfortable.</p></div><div className="heading-actions"><select className="select-control" value={activePg??''} onChange={e=>setActivePg(Number(e.target.value))}>{pgs.map(p=><option value={p.id} key={p.id}>{p.name}</option>)}</select></div></div><div className="metric-grid three"><Metric icon={<Settings/>} label="Total tickets" value={String(tickets.length)} hint="For this property" tone="blue"/><Metric icon={<CircleHelp/>} label="Open tickets" value={String(openTickets.length)} hint="Require attention" tone="amber"/><Metric icon={<Check/>} label="Resolved" value={String(tickets.filter(t=>t.status==='Resolved').length)} hint="Completed requests" tone="green"/></div><div className="panel table-panel"><div className="panel-head"><div><h3>Maintenance requests</h3><p>{activeProperty?.name||'Selected property'} · All reported issues</p></div><span className="subtle-count">{tickets.length} TICKETS</span></div>{tickets.length?<div className="ticket-list">{tickets.map(t=><div className="ticket-row" key={t.id}><span className={`ticket-icon ${t.urgency.toLowerCase()}`}><Settings size={18}/></span><div className="ticket-main"><strong>{t.category} <span className={`urgency urgency-${t.urgency.toLowerCase()}`}>{t.urgency} priority</span></strong><p>{t.description}</p><small>{t.tenant_name||'Resident'} · Room {t.room_no??'—'} · Bed {t.bed_label??'—'} · {t.age_in_days} days ago</small></div><div className="ticket-controls"><span className={`status-chip ${t.status.toLowerCase().replace(' ','-')}`}>{t.status}</span><select value={t.status} aria-label={`Change status for ticket ${t.id}`} onChange={e=>changeTicket(t.id,e.target.value)}><option>Open</option><option>In Progress</option><option>Resolved</option></select></div></div>)}</div>:<div className="empty-state big-empty"><Check size={25}/><strong>All quiet for now</strong><span>No maintenance tickets have been reported for this property.</span></div>}</div></>}
-  {view==='announcements'&&<><div className="page-heading"><div><span className="eyebrow pink-text">KEEP EVERYONE IN THE LOOP</span><h1>Announcements <span className="wave">✳</span></h1><p>Share useful updates with residents of {activeProperty?.name||'your property'}.</p></div></div><div className="announcement-layout"><section className="panel compose-panel"><div className="compose-icon"><Bell size={21}/></div><h2>Share an update</h2><p>Write a clear note your residents can refer back to.</p><form onSubmit={addAnnouncement}><label>Property<select className="select-control" value={activePg??''} onChange={e=>setActivePg(Number(e.target.value))}>{pgs.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label><label>Message<textarea value={announcementText} onChange={e=>setAnnouncementText(e.target.value)} placeholder="e.g. Water tank cleaning is scheduled for Saturday morning…" rows={5} maxLength={1000} required/></label><div className="compose-foot"><span>{announcementText.length}/1000 characters</span><button className="primary-btn" type="submit"><Plus size={16}/> Publish announcement</button></div></form></section><section className="announcement-feed"><div className="section-heading"><div><h2>Recent updates</h2><p>Previously shared with residents.</p></div><span className="subtle-count">{announcements.length} POSTS</span></div>{announcements.length?announcements.map(a=><article className="announcement-card" key={a.id}><div className="announcement-card-top"><span className="announcement-mark"><Bell size={16}/></span><span>{new Date(a.created_at).toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'})}</span></div><p>{a.message}</p><div className="announcement-foot"><span><Check size={14}/> Published</span><span>{activeProperty?.name}</span><button className="icon-btn danger-icon" title="Delete announcement" onClick={()=>removeAnnouncement(a.id)}><Trash2 size={15}/></button></div></article>):<div className="panel empty-state big-empty"><Bell size={25}/><strong>No announcements yet</strong><span>Your published updates will appear here.</span></div>}</section></div></>}
-  {tenantRecord&&<div className="modal-backdrop" onClick={()=>setTenantRecord(null)}><section className="modal-card bed-detail-modal" onClick={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow pink-text">TENANT RECORD</span><h2>{tenantRecord.profile.name}</h2></div><button className="icon-btn" onClick={()=>setTenantRecord(null)}><X size={18}/></button></div><div className="tenant-profile-line"><span className="tenant-avatar"><UserRound size={20}/></span><div><strong>{tenantRecord.profile.phone}</strong><small>Joined {tenantRecord.profile.join_date} · {tenantRecord.profile.is_active?'Active tenancy':'Vacated tenancy'}</small></div><span className={`status-chip ${tenantRecord.profile.is_active?'in-progress':'resolved'}`}>{tenantRecord.profile.is_active?'Active':'Vacated'}</span></div><div className="detail-grid"><div><small>Agreed yearly price</small><strong>{money(tenantRecord.profile.agreed_yearly_price)}</strong></div><div><small>Deposit</small><strong>{money(tenantRecord.profile.deposit)}</strong></div><div><small>Total paid</small><strong>{money(tenantRecord.financials.total_paid)}</strong></div><div><small>Balance left</small><strong>{money(tenantRecord.financials.due_left)}</strong></div><div><small>Overdue</small><strong className="overdue-value">{money(tenantRecord.financials.overdue_amount)}</strong></div><div><small>Next due</small><strong>{tenantRecord.financials.next_due_date||'None'}</strong></div></div><div className="modal-section-title">Complete payment history</div>{tenantRecord.financials.payments.length?tenantRecord.financials.payments.map((p:any,i:number)=><div className="finance-line" key={`${p.paid_on}-${i}`}><span>{p.paid_on} · {p.mode.toUpperCase()}</span><strong>{money(p.amount)}</strong></div>):<div className="empty-state">No payments recorded.</div>}{tenantRecord.profile.is_active&&<div className="modal-actions"><button className="primary-btn" onClick={()=>{setPaymentTenant(tenantRecord.profile.tenant_id);setPaymentForm({amount:'',paid_on:new Date().toISOString().slice(0,10),mode:'upi'})}}><CreditCard size={16}/> Record payment</button><button className="outline-btn danger-outline" onClick={()=>vacateTenantAction(tenantRecord.profile.tenant_id)}>Vacate tenant</button></div>}</section></div>}
-  {bedDetails&&<div className="modal-backdrop" onClick={()=>setBedDetails(null)}><section className="modal-card bed-detail-modal" onClick={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow pink-text">ROOM {bedDetails.room_no} · {bedDetails.pg_name}</span><h2>Bed {bedDetails.bed.label}</h2></div><button className="icon-btn" onClick={()=>setBedDetails(null)}><X size={18}/></button></div><div className="detail-price"><span>Base yearly price</span><strong>{money(bedDetails.bed.base_yearly_price)}</strong></div>{bedDetails.tenant?<><div className="tenant-profile-line"><span className="tenant-avatar"><UserRound size={20}/></span><div><strong>{bedDetails.tenant.name}</strong><small>{bedDetails.tenant.phone} · Joined {bedDetails.tenant.join_date}</small></div><span className="status-chip">Occupied</span></div><div className="detail-grid"><div><small>Agreed yearly price</small><strong>{money(bedDetails.tenant.agreed_yearly_price)}</strong></div><div><small>Deposit</small><strong>{money(bedDetails.tenant.deposit)}</strong></div><div><small>Total paid</small><strong>{money(bedDetails.financials?.total_paid||0)}</strong></div><div><small>Balance left</small><strong>{money(bedDetails.financials?.due_left||0)}</strong></div><div><small>Overdue</small><strong className="overdue-value">{money(bedDetails.financials?.overdue_amount||0)}</strong></div><div><small>Next due</small><strong>{bedDetails.financials?.next_due_date||'None'}</strong></div></div><div className="modal-section-title">Payment history</div>{bedDetails.financials?.payments?.length?bedDetails.financials.payments.map((p:any,i:number)=><div className="finance-line" key={`${p.paid_on}-${i}`}><span>{p.paid_on} · {p.mode.toUpperCase()}</span><strong>{money(p.amount)}</strong></div>):<div className="empty-state">No payments recorded yet.</div>}<div className="modal-actions"><button className="primary-btn" onClick={()=>{setPaymentTenant(bedDetails.tenant.tenant_id);setPaymentForm({amount:'',paid_on:new Date().toISOString().slice(0,10),mode:'upi'})}}><CreditCard size={16}/> Record payment</button><button className="outline-btn danger-outline" onClick={()=>vacateTenantAction(bedDetails.tenant.tenant_id)}>Vacate tenant</button></div></>:<><div className="empty-state"><BedDouble size={22}/><strong>This bed is available</strong><span>Add a resident to assign a login and start tracking payments.</span></div><div className="modal-actions"><button className="primary-btn" onClick={()=>startAddTenant(bedDetails.bed.bed_id)}><Plus size={16}/> Add tenant</button></div></>}</section></div>}
-  {addTenantOpen&&<div className="modal-backdrop" onClick={()=>setAddTenantOpen(false)}><section className="modal-card" onClick={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow pink-text">NEW RESIDENT</span><h2>Add tenant</h2></div><button className="icon-btn" onClick={()=>setAddTenantOpen(false)}><X size={18}/></button></div><form className="modal-form" onSubmit={saveTenant}><div className="form-two"><label>Full name<input required value={tenantForm.name} onChange={e=>setTenantForm(f=>({...f,name:e.target.value}))}/></label><label>Phone<input required value={tenantForm.phone} onChange={e=>setTenantForm(f=>({...f,phone:e.target.value}))}/></label></div><div className="form-two"><label>Joining date<input type="date" required value={tenantForm.join_date} onChange={e=>updateJoinDate(e.target.value)}/></label><label>Deposit (₹)<input type="number" min="0" step="1" required value={tenantForm.deposit} onChange={e=>setTenantForm(f=>({...f,deposit:e.target.value}))}/></label></div><label>Agreed yearly price (₹)<input type="number" min="0" step="100" required value={tenantForm.agreed_yearly_price} onChange={e=>setTenantForm(f=>({...f,agreed_yearly_price:e.target.value}))}/><small>{suggestedPrice!==null?`Suggested late-join price: ${money(suggestedPrice)}. Owner can edit this amount.`:'Suggested price is calculated from the base price and joining date.'}</small></label><div className="form-two"><label>Login username<input required value={tenantForm.username} onChange={e=>setTenantForm(f=>({...f,username:e.target.value}))}/></label><label>Temporary password<input required minLength={6} value={tenantForm.password} onChange={e=>setTenantForm(f=>({...f,password:e.target.value}))}/></label></div><div className="modal-actions"><button className="outline-btn" type="button" onClick={()=>setAddTenantOpen(false)}>Cancel</button><button className="primary-btn" type="submit"><Check size={16}/> Create tenant</button></div></form></section></div>}
-  {paymentTenant!==null&&<div className="modal-backdrop" onClick={()=>setPaymentTenant(null)}><section className="modal-card payment-modal" onClick={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow pink-text">PAYMENT RECORD</span><h2>Record payment</h2></div><button className="icon-btn" onClick={()=>setPaymentTenant(null)}><X size={18}/></button></div><form className="modal-form" onSubmit={savePayment}><label>Amount (₹)<input type="number" min="1" step="1" required value={paymentForm.amount} onChange={e=>setPaymentForm(f=>({...f,amount:e.target.value}))}/></label><div className="form-two"><label>Payment date<input type="date" required value={paymentForm.paid_on} onChange={e=>setPaymentForm(f=>({...f,paid_on:e.target.value}))}/></label><label>Payment mode<select value={paymentForm.mode} onChange={e=>setPaymentForm(f=>({...f,mode:e.target.value}))}><option value="upi">UPI</option><option value="cash">Cash</option></select></label></div><div className="modal-actions"><button className="outline-btn" type="button" onClick={()=>setPaymentTenant(null)}>Cancel</button><button className="primary-btn" type="submit"><Check size={16}/> Save payment</button></div></form></section></div>}
-  <footer className="page-footer"><span>© 2026 GharPar</span><span>Thoughtfully made for the places we call home <span className="footer-heart">♥</span></span></footer></div></main></div>
+  // Load Tenant Data
+  const refreshTenantData = useCallback(async () => {
+    if (!token || role !== 'tenant') return
+    setTenantLoading(true)
+    setErrorBanner('')
+    try {
+      const data = await api.getTenantHome()
+      setTenantHomeData(data)
+    } catch (err: any) {
+      if (String(err.message).toLowerCase().includes('sign in') || String(err.message).includes('401')) {
+        handleLogout()
+      } else {
+        setErrorBanner(err.message || 'Unable to sync resident data.')
+      }
+    } finally {
+      setTenantLoading(false)
+    }
+  }, [token, role])
+
+  // Verify Auth & Initial Load
+  useEffect(() => {
+    if (token) {
+      api.me()
+        .then(res => {
+          setUsername(res.username)
+          setRole(res.role)
+        })
+        .catch(() => {
+          handleLogout()
+        })
+    }
+  }, [token])
+
+  useEffect(() => {
+    if (token && role === 'owner') {
+      refreshOwnerData()
+    } else if (token && role === 'tenant') {
+      refreshTenantData()
+    }
+  }, [token, role, refreshOwnerData, refreshTenantData])
+
+  useEffect(() => {
+    if (token && role === 'owner' && activePropertyId !== null) {
+      loadPropertyLayout(activePropertyId)
+    }
+  }, [token, role, activePropertyId, loadPropertyLayout])
+
+  // Authentication Handlers
+  const handleLogin = async (u: string, p: string) => {
+    setAuthBusy(true)
+    setAuthError('')
+    try {
+      const res = await api.login(u, p)
+      setAuthSession(res.token, res.user.role)
+      setToken(res.token)
+      setRole(res.user.role)
+      setUsername(res.user.username)
+      notify(`Welcome back, ${res.user.username}! Signed in to PG Manager.`)
+    } catch (err: any) {
+      setAuthError(err.message || 'Sign in failed. Check credentials.')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const handleLogout = () => {
+    api.logout().catch(() => {})
+    clearAuthSession()
+    setToken('')
+    setRole('owner')
+    setUsername('')
+    setOverviewData(null)
+    setDashboardData(null)
+    setFinanceData(null)
+    setTenantHomeData(null)
+    setProperties([])
+    setActivePropertyId(null)
+    setSelectedBedDetails(null)
+    setInspectTenantRecord(null)
+    notify('Successfully signed out.')
+  }
+
+  // Owner Action Handlers
+  const handleSelectBed = async (bed: Bed) => {
+    try {
+      const details = await api.getBedDetails(bed.bed_id)
+      setSelectedBedDetails(details)
+    } catch (err: any) {
+      setErrorBanner(err.message || 'Could not fetch bed details.')
+    }
+  }
+
+  const handleOpenAddTenant = (bedId: number, basePrice: number = 200000) => {
+    setAddTenantBedId(bedId)
+    setAddTenantBasePrice(basePrice)
+    setSelectedBedDetails(null)
+    setAddTenantOpen(true)
+  }
+
+  const handleOpenRecordPayment = (tenantId?: number, name?: string, dueLeft?: number) => {
+    if (tenantId) {
+      setPaymentTenantId(tenantId)
+      setPaymentTenantName(name || '')
+      setPaymentDueLeft(dueLeft)
+      setPaymentModalOpen(true)
+    } else {
+      // If called generically, pick the first active tenant
+      const activeOne = allTenants.find(t => t.is_active)
+      if (activeOne) {
+        setPaymentTenantId(activeOne.tenant_id)
+        setPaymentTenantName(activeOne.name)
+        setPaymentDueLeft(activeOne.financials?.due_left)
+        setPaymentModalOpen(true)
+      } else {
+        setErrorBanner('No active residents available to record payment.')
+      }
+    }
+  }
+
+  const handleOpenTenantRecord = async (tenantId: number) => {
+    try {
+      const rec = await api.getTenantRecord(tenantId)
+      setInspectTenantRecord(rec)
+      setTenantRecordModalOpen(true)
+    } catch (err: any) {
+      setErrorBanner(err.message || 'Could not load resident record.')
+    }
+  }
+
+  const handleVacateTenant = async (tenantId: number, name: string) => {
+    if (!window.confirm(`Are you sure you want to vacate ${name}? Their account will be deactivated, but all payment history and records will remain preserved permanently.`)) {
+      return
+    }
+    try {
+      await api.vacateTenant(tenantId)
+      notify(`Resident ${name} vacated. Tenancy history has been preserved.`)
+      setSelectedBedDetails(null)
+      setTenantRecordModalOpen(false)
+      await refreshOwnerData()
+      if (activePropertyId) await loadPropertyLayout(activePropertyId)
+    } catch (err: any) {
+      setErrorBanner(err.message || 'Could not vacate resident.')
+    }
+  }
+
+  const handleUpdateTicketStatus = async (ticketId: number, newStatus: Ticket['status']) => {
+    try {
+      await api.updateTicketStatus(ticketId, newStatus)
+      notify(`Maintenance ticket #${ticketId} updated to ${newStatus}.`)
+      await refreshOwnerData()
+    } catch (err: any) {
+      setErrorBanner(err.message || 'Could not update ticket status.')
+    }
+  }
+
+  const handleAddAnnouncement = async (pgId: number, message: string) => {
+    await api.createAnnouncement(pgId, message)
+    notify('Announcement published to resident dashboards.')
+    await refreshOwnerData()
+  }
+
+  const handleDeleteAnnouncement = async (id: number) => {
+    await api.deleteAnnouncement(id)
+    notify('Announcement deleted.')
+    await refreshOwnerData()
+  }
+
+  const handleUpdateRoomBalcony = async (roomId: number, hasBalcony: boolean | null) => {
+    try {
+      await api.updateRoomBalcony(roomId, hasBalcony)
+      notify('Room balcony configuration updated.')
+      await refreshOwnerData()
+    } catch (err: any) {
+      setErrorBanner(err.message || 'Could not update balcony setting.')
+    }
+  }
+
+  // Tenant Action Handlers
+  const handleSubmitTenantTicket = async (category: string, urgency: string, description: string) => {
+    await api.createTenantTicket({ category, urgency, description })
+    notify('Maintenance request submitted successfully!')
+    await refreshTenantData()
+  }
+
+  // RENDER: Login View
+  if (!token) {
+    return (
+      <LoginPage
+        onLogin={handleLogin}
+        busy={authBusy}
+        error={authError}
+        onClearError={() => setAuthError('')}
+      />
+    )
+  }
+
+  // RENDER: Resident Portal
+  if (role === 'tenant') {
+    return (
+      <div className="cohere-app-shell tenant-shell-mode">
+        {/* Mobile Navigation Backdrop */}
+        {mobileNavOpen && (
+          <div className="mobile-nav-backdrop" onClick={() => setMobileNavOpen(false)} />
+        )}
+
+        {/* Sidebar Navigation */}
+        <aside className={`cohere-sidebar ${mobileNavOpen ? 'is-mobile-open' : ''}`}>
+          <div className="sidebar-top">
+            <div className="brand-logo-strip">
+              <span className="brand-logo-mark"><Building2 size={19} /></span>
+              <div className="brand-text-block">
+                <span className="brand-title">PG Manager</span>
+                <span className="brand-portal-tag">Resident Portal</span>
+              </div>
+            </div>
+            <button className="mobile-close-btn" onClick={() => setMobileNavOpen(false)}>
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className="sidebar-nav-section">
+            <span className="nav-section-title">MY ACCOMMODATION</span>
+            <button
+              className={`nav-menu-item ${tenantView === 'home' ? 'is-active' : ''}`}
+              onClick={() => { setTenantView('home'); setMobileNavOpen(false) }}
+            >
+              <Home size={18} /> Home Dashboard
+            </button>
+            <button
+              className={`nav-menu-item ${tenantView === 'accommodation' ? 'is-active' : ''}`}
+              onClick={() => { setTenantView('accommodation'); setMobileNavOpen(false) }}
+            >
+              <DoorOpen size={18} /> My Room & Bed
+            </button>
+            <button
+              className={`nav-menu-item ${tenantView === 'payments' ? 'is-active' : ''}`}
+              onClick={() => { setTenantView('payments'); setMobileNavOpen(false) }}
+            >
+              <Wallet size={18} /> Payments & Schedule
+            </button>
+          </div>
+
+          <div className="sidebar-nav-section">
+            <span className="nav-section-title">SERVICES & NOTICES</span>
+            <button
+              className={`nav-menu-item ${tenantView === 'maintenance' ? 'is-active' : ''}`}
+              onClick={() => { setTenantView('maintenance'); setMobileNavOpen(false) }}
+            >
+              <Settings size={18} />
+              <span>Maintenance</span>
+              {tenantHomeData?.tickets.filter(t => t.status !== 'Resolved').length ? (
+                <span className="nav-badge-count">
+                  {tenantHomeData.tickets.filter(t => t.status !== 'Resolved').length}
+                </span>
+              ) : null}
+            </button>
+            <button
+              className={`nav-menu-item ${tenantView === 'announcements' ? 'is-active' : ''}`}
+              onClick={() => { setTenantView('announcements'); setMobileNavOpen(false) }}
+            >
+              <Bell size={18} /> Announcements
+            </button>
+            <button
+              className={`nav-menu-item ${tenantView === 'profile' ? 'is-active' : ''}`}
+              onClick={() => { setTenantView('profile'); setMobileNavOpen(false) }}
+            >
+              <User size={18} /> Account Profile
+            </button>
+          </div>
+
+          <div className="sidebar-bottom-block">
+            <div className="resident-status-card">
+              <span className="res-card-name">{tenantHomeData?.profile.name || username}</span>
+              <span className="res-card-pg">
+                {tenantHomeData?.profile.pg_name || 'Resident'} · Room {tenantHomeData?.profile.room_no}
+              </span>
+            </div>
+            <button className="signout-button" onClick={handleLogout}>
+              <LogOut size={16} /> Sign Out
+            </button>
+          </div>
+        </aside>
+
+        {/* Main Content Area */}
+        <div className="cohere-main-container">
+          {/* Top Bar */}
+          <header className="cohere-topbar">
+            <div className="topbar-left">
+              <button
+                className="hamburger-btn"
+                onClick={() => setMobileNavOpen(true)}
+                aria-label="Toggle navigation"
+              >
+                <Menu size={20} />
+              </button>
+              <div className="topbar-breadcrumbs">
+                <span>Resident Portal</span>
+                <span className="sep">/</span>
+                <strong className="current-crumb">
+                  {tenantView === 'home' && 'Home Dashboard'}
+                  {tenantView === 'accommodation' && 'My Room & Bed'}
+                  {tenantView === 'payments' && 'Payments & Schedule'}
+                  {tenantView === 'maintenance' && 'Maintenance Requests'}
+                  {tenantView === 'announcements' && 'Property Announcements'}
+                  {tenantView === 'profile' && 'Account Profile'}
+                </strong>
+              </div>
+            </div>
+
+            <div className="topbar-right">
+              <div className="topbar-pill">
+                <span className="live-dot" />
+                <span>{tenantHomeData?.profile.pg_name || 'PG'}</span>
+              </div>
+              <div className="user-avatar-tag" title={username}>
+                {(tenantHomeData?.profile.name || username).slice(0, 1).toUpperCase()}
+              </div>
+            </div>
+          </header>
+
+          {/* Toast / Global Alerts */}
+          {notice && (
+            <div className="global-toast toast-success">
+              <Check size={16} />
+              <span>{notice}</span>
+              <button onClick={() => setNotice('')}>×</button>
+            </div>
+          )}
+          {errorBanner && (
+            <div className="global-toast toast-error">
+              <AlertCircle size={16} />
+              <span>{errorBanner}</span>
+              <button onClick={() => setErrorBanner('')}>×</button>
+            </div>
+          )}
+
+          {/* View Body */}
+          <main className="view-scroll-viewport">
+            {tenantView === 'home' && (
+              <TenantDashboard
+                data={tenantHomeData}
+                loading={tenantLoading}
+                onNavigateTab={setTenantView}
+              />
+            )}
+            {tenantView === 'accommodation' && (
+              <TenantAccommodation
+                profile={tenantHomeData?.profile || null}
+                loading={tenantLoading}
+              />
+            )}
+            {tenantView === 'payments' && (
+              <TenantPayments
+                financials={tenantHomeData?.financials || null}
+                loading={tenantLoading}
+              />
+            )}
+            {tenantView === 'maintenance' && (
+              <TenantMaintenance
+                tickets={tenantHomeData?.tickets || []}
+                loading={tenantLoading}
+                onSubmitTicket={handleSubmitTenantTicket}
+              />
+            )}
+            {tenantView === 'announcements' && (
+              <TenantAnnouncements
+                announcements={tenantHomeData?.announcements || []}
+                propertyName={tenantHomeData?.profile.pg_name}
+                loading={tenantLoading}
+              />
+            )}
+            {tenantView === 'profile' && (
+              <TenantProfileView
+                profile={tenantHomeData?.profile || null}
+                username={username}
+                loading={tenantLoading}
+                onLogout={handleLogout}
+              />
+            )}
+          </main>
+        </div>
+      </div>
+    )
+  }
+
+  // RENDER: Owner Portal
+  return (
+    <div className="cohere-app-shell">
+      {/* Mobile Navigation Backdrop */}
+      {mobileNavOpen && (
+        <div className="mobile-nav-backdrop" onClick={() => setMobileNavOpen(false)} />
+      )}
+
+      {/* Sidebar Navigation */}
+      <aside className={`cohere-sidebar ${mobileNavOpen ? 'is-mobile-open' : ''}`}>
+        <div className="sidebar-top">
+          <div className="brand-logo-strip">
+            <span className="brand-logo-mark"><Building2 size={19} /></span>
+            <div className="brand-text-block">
+              <span className="brand-title">PG Manager</span>
+              <span className="brand-portal-tag">Owner Command</span>
+            </div>
+          </div>
+          <button className="mobile-close-btn" onClick={() => setMobileNavOpen(false)}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="sidebar-nav-section">
+          <span className="nav-section-title">COMMAND CENTER</span>
+          <button
+            className={`nav-menu-item ${ownerView === 'overview' ? 'is-active' : ''}`}
+            onClick={() => { setOwnerView('overview'); setMobileNavOpen(false) }}
+          >
+            <Building2 size={18} /> Home
+          </button>
+          <button
+            className={`nav-menu-item ${ownerView === 'properties' ? 'is-active' : ''}`}
+            onClick={() => { setOwnerView('properties'); setMobileNavOpen(false) }}
+          >
+            <BedDouble size={18} /> Properties
+          </button>
+          <button
+            className={`nav-menu-item ${ownerView === 'tenants' ? 'is-active' : ''}`}
+            onClick={() => { setOwnerView('tenants'); setMobileNavOpen(false) }}
+          >
+            <Users size={18} />
+            <span>Tenants</span>
+            {allTenants.length ? (
+              <span className="nav-badge-count">{allTenants.filter(t => t.is_active).length}</span>
+            ) : null}
+          </button>
+        </div>
+
+        <div className="sidebar-nav-section">
+          <span className="nav-section-title">FINANCE & DISPATCH</span>
+          <button
+            className={`nav-menu-item ${ownerView === 'finance' ? 'is-active' : ''}`}
+            onClick={() => { setOwnerView('finance'); setMobileNavOpen(false) }}
+          >
+            <Wallet size={18} /> Finance
+          </button>
+          <button
+            className={`nav-menu-item ${ownerView === 'maintenance' ? 'is-active' : ''}`}
+            onClick={() => { setOwnerView('maintenance'); setMobileNavOpen(false) }}
+          >
+            <Settings size={18} />
+            <span>Maintenance</span>
+            {allTickets.filter(t => t.status !== 'Resolved').length ? (
+              <span className="nav-badge-count count-coral">
+                {allTickets.filter(t => t.status !== 'Resolved').length}
+              </span>
+            ) : null}
+          </button>
+          <button
+            className={`nav-menu-item ${ownerView === 'announcements' ? 'is-active' : ''}`}
+            onClick={() => { setOwnerView('announcements'); setMobileNavOpen(false) }}
+          >
+            <Bell size={18} /> Announcements
+          </button>
+        </div>
+
+        <div className="sidebar-bottom-block">
+          <div className="resident-status-card owner-id-card">
+            <span className="res-card-name">{username || 'Property Owner'}</span>
+            <span className="res-card-pg">Administrator · {properties.length} Properties</span>
+          </div>
+          <button className="signout-button" onClick={handleLogout}>
+            <LogOut size={16} /> Sign Out
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content Area */}
+      <div className="cohere-main-container">
+        {/* Topbar */}
+        <header className="cohere-topbar">
+          <div className="topbar-left">
+            <button
+              className="hamburger-btn"
+              onClick={() => setMobileNavOpen(true)}
+              aria-label="Toggle navigation"
+            >
+              <Menu size={20} />
+            </button>
+            <div className="topbar-breadcrumbs">
+              <span>Workspace</span>
+              <span className="sep">/</span>
+              <strong className="current-crumb">
+                {ownerView === 'overview' && 'Executive Overview'}
+                {ownerView === 'properties' && 'Properties & Floor Plans'}
+                {ownerView === 'tenants' && 'Resident Directory'}
+                {ownerView === 'finance' && 'Finance & Collections'}
+                {ownerView === 'maintenance' && 'Maintenance Workspace'}
+                {ownerView === 'announcements' && 'Broadcast Announcements'}
+              </strong>
+            </div>
+          </div>
+
+          <div className="topbar-right">
+            <div className="topbar-pill">
+              <span className="live-dot" />
+              <span>SQLite Persistent Storage</span>
+            </div>
+            <button
+              className="button-pill-outline button-sm header-action-btn"
+              onClick={() => handleOpenRecordPayment()}
+            >
+              <CreditCard size={14} /> Quick Collect
+            </button>
+            <div className="user-avatar-tag" title={username}>
+              {username ? username.slice(0, 1).toUpperCase() : 'O'}
+            </div>
+          </div>
+        </header>
+
+        {/* Global Notifications */}
+        {notice && (
+          <div className="global-toast toast-success">
+            <Check size={16} />
+            <span>{notice}</span>
+            <button onClick={() => setNotice('')}>×</button>
+          </div>
+        )}
+        {errorBanner && (
+          <div className="global-toast toast-error">
+            <AlertCircle size={16} />
+            <span>{errorBanner}</span>
+            <button onClick={() => setErrorBanner('')}>×</button>
+          </div>
+        )}
+
+        {/* View Body */}
+        <main className="view-scroll-viewport">
+          {ownerView === 'overview' && (
+            <OwnerDashboard
+              username={username}
+              data={dashboardData}
+              loading={ownerLoading}
+              selectedMonth={selectedMonth}
+              onChangeMonth={m => setSelectedMonth(m)}
+              onRefresh={refreshOwnerData}
+              onSelectProperty={id => {
+                setActivePropertyId(id)
+                setOwnerView('properties')
+              }}
+              onNavigateTab={tab => setOwnerView(tab as OwnerView)}
+              onRecordPayment={handleOpenRecordPayment}
+              onUpdateTicketStatus={handleUpdateTicketStatus}
+              onAddTenantToBed={(pgId, bedId, basePrice) => {
+                setActivePropertyId(pgId)
+                handleOpenAddTenant(bedId, basePrice)
+              }}
+              onUpdateRoomBalcony={handleUpdateRoomBalcony}
+            />
+          )}
+
+          {ownerView === 'properties' && (
+            <OwnerProperties
+              properties={properties}
+              activePropertyId={activePropertyId}
+              layout={layout}
+              summary={propertySummary}
+              loading={ownerLoading}
+              onSelectProperty={id => setActivePropertyId(id)}
+              onSelectBed={handleSelectBed}
+              onAddTenantToBed={(bedId, basePrice) => handleOpenAddTenant(bedId, basePrice)}
+            />
+          )}
+
+          {ownerView === 'tenants' && (
+            <OwnerTenants
+              tenants={allTenants}
+              properties={properties}
+              activePropertyId={activePropertyId}
+              loading={ownerLoading}
+              onOpenTenantRecord={handleOpenTenantRecord}
+              onRecordPayment={handleOpenRecordPayment}
+              onVacateTenant={handleVacateTenant}
+            />
+          )}
+
+          {ownerView === 'finance' && (
+            <OwnerFinance
+              financeData={financeData}
+              loading={ownerLoading}
+              onOpenRecordPayment={handleOpenRecordPayment}
+              onOpenTenantRecord={handleOpenTenantRecord}
+            />
+          )}
+
+          {ownerView === 'maintenance' && (
+            <OwnerMaintenance
+              tickets={allTickets}
+              properties={properties}
+              loading={ownerLoading}
+              onUpdateStatus={handleUpdateTicketStatus}
+            />
+          )}
+
+          {ownerView === 'announcements' && (
+            <OwnerAnnouncements
+              announcements={ownerAnnouncements}
+              properties={properties}
+              activePropertyId={activePropertyId}
+              loading={ownerLoading}
+              onAddAnnouncement={handleAddAnnouncement}
+              onDeleteAnnouncement={handleDeleteAnnouncement}
+            />
+          )}
+        </main>
+      </div>
+
+      {/* Owner Modals */}
+      <BedDetailsModal
+        isOpen={!!selectedBedDetails}
+        onClose={() => setSelectedBedDetails(null)}
+        details={selectedBedDetails}
+        onRecordPayment={tenantId => {
+          const tenant = selectedBedDetails?.tenant
+          const financials = selectedBedDetails?.financials
+          setSelectedBedDetails(null)
+          handleOpenRecordPayment(tenantId, tenant?.name, financials?.due_left)
+        }}
+        onVacateTenant={(tenantId, name) => handleVacateTenant(tenantId, name)}
+        onAddTenant={bedId => {
+          const base = selectedBedDetails?.bed?.base_yearly_price || 200000
+          handleOpenAddTenant(bedId, base)
+        }}
+      />
+
+      <AddTenantModal
+        isOpen={addTenantOpen}
+        onClose={() => setAddTenantOpen(false)}
+        bedId={addTenantBedId}
+        pgId={activePropertyId || (properties[0]?.id ?? 1)}
+        basePrice={addTenantBasePrice}
+        onSuccess={async msg => {
+          notify(msg)
+          await refreshOwnerData()
+          if (activePropertyId) await loadPropertyLayout(activePropertyId)
+        }}
+      />
+
+      <RecordPaymentModal
+        isOpen={paymentModalOpen}
+        onClose={() => setPaymentModalOpen(false)}
+        tenantId={paymentTenantId}
+        tenantName={paymentTenantName}
+        remainingDue={paymentDueLeft}
+        onSuccess={async msg => {
+          notify(msg)
+          await refreshOwnerData()
+          if (activePropertyId) await loadPropertyLayout(activePropertyId)
+          if (inspectTenantRecord) {
+            await handleOpenTenantRecord(paymentTenantId)
+          }
+        }}
+      />
+
+      <TenantRecordModal
+        isOpen={tenantRecordModalOpen}
+        onClose={() => setTenantRecordModalOpen(false)}
+        record={inspectTenantRecord}
+        onRecordPayment={(tenantId, name, remainingDue) => {
+          setTenantRecordModalOpen(false)
+          handleOpenRecordPayment(tenantId, name, remainingDue)
+        }}
+        onVacateTenant={handleVacateTenant}
+      />
+    </div>
+  )
 }
-function Metric({icon,label,value,hint,tone}:{icon:any;label:string;value:string;hint:string;tone:string}) { return <div className="metric-card"><div className="metric-top"><span className={`metric-icon ${tone}`}>{icon}</span><span className="metric-trend"><ArrowUpRight size={14}/></span></div><span className="metric-label">{label}</span><strong className="metric-value">{value}</strong><span className="metric-hint">{hint}</span></div> }

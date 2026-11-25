@@ -1,4 +1,4 @@
-# Viva Notes: GharPar PG Manager
+# Viva Notes: PG Manager
 
 ## What does the project do?
 It helps a PG owner see properties, rooms, beds, tenant payment status, maintenance tickets, and announcements. Tenants can view their financial information, announcements, and raise maintenance tickets.

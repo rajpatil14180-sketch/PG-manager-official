@@ -13,7 +13,7 @@ class LoginScreen(ttk.Frame):
         Build the screen and initialize its controls."""
         super().__init__(parent)
         self.app = app
-        ttk.Label(self, text="GharPar PG Manager", font=("TkDefaultFont", 22, "bold")).pack(pady=(70, 10))
+        ttk.Label(self, text="PG Manager", font=("TkDefaultFont", 22, "bold")).pack(pady=(70, 10))
         ttk.Label(self, text="Sign in with your account").pack(pady=(0, 20))
         form = ttk.Frame(self)
         form.pack()
