@@ -233,6 +233,10 @@ def get_owner_dashboard(owner_id, month_str=None, today=None):
         if m_start.isoformat() <= py["paid_on"] <= m_end.isoformat():
             pg_map[py["pg_id"]]["collected_this_month"] += py["amount"]
 
+    # For historical months, classify arrears as of that month's end.
+    # For the current/future month, never look beyond today.
+    financial_as_of = min(today, m_end)
+
     # Process tenant schedules
     overdue_tenants_list = []
     tenant_schedules = {}
@@ -255,12 +259,12 @@ def get_owner_dashboard(owner_id, month_str=None, today=None):
             if m_start <= d <= m_end and _is_tenant_eligible_for_month(t, d, m_start):
                 pg_map[pid]["scheduled_rent"] += inst["amount"]
                 pg_map[pid]["paid_against_scheduled"] += inst["covered"]
-                if d <= today:
+                if d <= financial_as_of:
                     pg_map[pid]["current_month_overdue"] += inst["unpaid"]
                     t_curr_overdue += inst["unpaid"]
                 else:
                     pg_map[pid]["current_month_not_yet_due"] += inst["unpaid"]
-            elif d < m_start and d <= today and t["is_active"] == 1:
+            elif d < m_start and d <= financial_as_of and t["is_active"] == 1:
                 pg_map[pid]["previous_arrears"] += inst["unpaid"]
                 t_prev_arrears += inst["unpaid"]
             elif next_m_start <= d <= next_m_end and t["is_active"] == 1:
