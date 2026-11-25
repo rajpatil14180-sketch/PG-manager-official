@@ -60,7 +60,7 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
 
   let response: Response
   try {
-    response = await fetch(`/api${path}`, { ...options, headers })
+    response = await fetch(`/api?__path=${encodeURIComponent(path)}`, { ...options, headers })
   } catch {
     throw new Error('Cannot reach the PG Manager API. Ensure web_api.py is running on port 8765.')
   }
